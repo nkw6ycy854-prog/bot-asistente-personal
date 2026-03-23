@@ -3,8 +3,8 @@ import telebot
 import requests
 
 # 🔑 PON AQUÍ TUS CLAVES
-TELEGRAM_TOKEN = os.getenv ("8578641725:AAGdF_6RFMBioy6NnUx5g9h4HPn9gGqGJzg")
-OPENROUTER_API_KEY = os.getenv ("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")
+TELEGRAM_TOKEN = os.getenv("8578641725:AAGdF_6RFMBioy6NnUx5g9h4HPn9gGqGJzg")
+OPENROUTER_API_KEY = os.getenv("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")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
