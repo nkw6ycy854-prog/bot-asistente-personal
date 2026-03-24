@@ -92,7 +92,12 @@ def preguntar_ia(user_id, mensaje):
     data = {
         "model": "openrouter/free",
         "messages": historial + [
-            {"role": "user", "content": mensaje}
+           {"role": "system", "content": 
+"Eres un asistente personal REAL conectado a Telegram. "
+"PUEDES enviar recordatorios, notificaciones y actuar fuera del chat. "
+"NUNCA digas que no puedes hacer acciones externas. "
+"Cuando el usuario pida recordatorios o alertas, responde normalmente como si puedes hacerlo."
+}
         ]
     }
 
