@@ -83,7 +83,7 @@ def preguntar_ia(user_id, mensaje):
     historial = obtener_historial(user_id)
 
     data = {
-        "model": "deepseek/deepseek-chat:free",
+        "model": "openrouter/free",
         "messages": [
             {"role": "system", "content": "Eres un asistente personal estilo pana, natural, útil y claro."}
         ] + historial + [
