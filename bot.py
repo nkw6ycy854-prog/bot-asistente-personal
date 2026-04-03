@@ -14,7 +14,7 @@ import re
 BOT_TOKEN  = os.getenv("TELEGRAM_TOKEN")
 API_KEY    = os.getenv("OPENROUTER_API_KEY")
 CHAT_ID    = os.getenv("CHAT_ID")
-MODEL      = "meta-llama/llama-3.3-70b-instruct:free"
+MODEL      = "openrouter/free"
 
 # ✅ Railway expone la URL pública del servicio en esta variable automáticamente
 WEBHOOK_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN")
