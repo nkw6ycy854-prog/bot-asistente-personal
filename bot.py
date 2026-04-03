@@ -5,17 +5,22 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta
+from flask import Flask, request
 import re
 
 # ==============================
 # 🔑 CONFIGURACIÓN
 # ==============================
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-API_KEY   = os.getenv("OPENROUTER_API_KEY")
-CHAT_ID   = os.getenv("CHAT_ID")
-MODEL     = "meta-llama/llama-3.3-70b-instruct:free"
+BOT_TOKEN  = os.getenv("TELEGRAM_TOKEN")
+API_KEY    = os.getenv("OPENROUTER_API_KEY")
+CHAT_ID    = os.getenv("CHAT_ID")
+MODEL      = "meta-llama/llama-3.3-70b-instruct:free"
+
+# ✅ Railway expone la URL pública del servicio en esta variable automáticamente
+WEBHOOK_URL = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 
 bot     = telebot.TeleBot(BOT_TOKEN)
+app     = Flask(__name__)
 db_lock = threading.Lock()
 
 # ==============================
@@ -29,8 +34,7 @@ def get_conn():
 def init_db():
     with db_lock:
         conn = get_conn()
-        c    = conn.cursor()
-        c.executescript("""
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS memoria (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id   INTEGER NOT NULL,
@@ -119,8 +123,7 @@ def listar_datos(user_id):
     with db_lock:
         conn = get_conn()
         rows = conn.execute(
-            "SELECT clave, valor FROM datos WHERE user_id=?",
-            (user_id,)
+            "SELECT clave, valor FROM datos WHERE user_id=?", (user_id,)
         ).fetchall()
         conn.close()
     return [(r["clave"], r["valor"]) for r in rows]
@@ -173,14 +176,9 @@ def hilo_recordatorios():
                     (ahora,)
                 ).fetchall()
                 conn.close()
-
             for rec in pendientes:
                 try:
-                    bot.send_message(
-                        rec["user_id"],
-                        f"⏰ *Recordatorio:*\n{rec['mensaje']}",
-                        parse_mode="Markdown"
-                    )
+                    bot.send_message(rec["user_id"], f"⏰ *Recordatorio:*\n{rec['mensaje']}", parse_mode="Markdown")
                     with db_lock:
                         conn = get_conn()
                         conn.execute("UPDATE recordatorios SET enviado=1 WHERE id=?", (rec["id"],))
@@ -197,7 +195,6 @@ threading.Thread(target=hilo_recordatorios, daemon=True).start()
 def parsear_tiempo(texto):
     texto = texto.lower().strip()
     ahora = datetime.now()
-
     patrones = [
         (r"en\s+(\d+)\s+minuto",  "minutes"),
         (r"en\s+(\d+)\s+hora",    "hours"),
@@ -205,19 +202,13 @@ def parsear_tiempo(texto):
         (r"en\s+(\d+)\s+dia",     "days"),
         (r"en\s+(\d+)\s+semana",  "weeks"),
     ]
-
     for patron, unidad in patrones:
         m = re.search(patron, texto)
         if m:
             n = int(m.group(1))
-            delta = {
-                "minutes": timedelta(minutes=n),
-                "hours":   timedelta(hours=n),
-                "days":    timedelta(days=n),
-                "weeks":   timedelta(weeks=n),
-            }[unidad]
+            delta = {"minutes": timedelta(minutes=n), "hours": timedelta(hours=n),
+                     "days": timedelta(days=n), "weeks": timedelta(weeks=n)}[unidad]
             return (ahora + delta).timestamp()
-
     m = re.search(r"a\s+las\s+(\d{1,2}):(\d{2})", texto)
     if m:
         h, mi = int(m.group(1)), int(m.group(2))
@@ -225,7 +216,6 @@ def parsear_tiempo(texto):
         if objetivo <= ahora:
             objetivo += timedelta(days=1)
         return objetivo.timestamp()
-
     return None
 
 # ==============================
@@ -256,52 +246,34 @@ Sé conciso, útil y amigable. Responde siempre en el idioma del usuario."""
 
 def preguntar_ia(user_id, mensaje):
     historial = obtener_historial(user_id)
-
-    messages = (
+    messages  = (
         [{"role": "system", "content": SYSTEM_PROMPT}]
         + historial
         + [{"role": "user", "content": mensaje}]
     )
-
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type":  "application/json",
-        "HTTP-Referer":  "https://github.com/tu-usuario/bot-asistente",
     }
-
-    data = {
-        "model":      MODEL,
-        "messages":   messages,
-        "max_tokens": 800,
-    }
-
+    data = {"model": MODEL, "messages": messages, "max_tokens": 800}
     try:
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=30
+            headers=headers, json=data, timeout=30
         )
-
         if response.status_code != 200:
             enviar_notificacion(f"Error API ({response.status_code}): {response.text[:300]}")
             return "Lo siento, hubo un error con la IA 😢"
-
         resultado = response.json()
-
         if "choices" not in resultado or not resultado["choices"]:
             enviar_notificacion(f"Respuesta inesperada: {str(resultado)[:300]}")
             return "No pude procesar la respuesta 😢"
-
         respuesta = resultado["choices"][0]["message"]["content"]
-
         guardar_mensaje(user_id, "user",      mensaje)
         guardar_mensaje(user_id, "assistant", respuesta)
-
         return respuesta
-
     except requests.Timeout:
-        return "La IA tardó demasiado en responder ⏳ Intenta de nuevo."
+        return "La IA tardó demasiado ⏳ Intenta de nuevo."
     except Exception as e:
         enviar_notificacion(f"Error IA: {e}")
         return "Error conectando con la IA 😢"
@@ -314,7 +286,7 @@ def cmd_start(message):
     texto = (
         "👋 *¡Hola! Soy tu asistente personal.*\n\n"
         "📋 *Comandos disponibles:*\n"
-        "• `/recordar en 30 minutos Tomar agua` — crea un recordatorio\n"
+        "• `/recordar en 30 minutos Tomar agua`\n"
         "• `/recordatorios` — ver recordatorios activos\n"
         "• `/cancelar <id>` — cancelar un recordatorio\n"
         "• `/guardar <clave> <valor>` — guardar un dato\n"
@@ -332,22 +304,16 @@ def cmd_recordar(message):
     if len(partes) < 2:
         bot.reply_to(message, "📌 Uso: `/recordar en 30 minutos Tomar agua`", parse_mode="Markdown")
         return
-
     texto_completo = partes[1]
     tiempo = parsear_tiempo(texto_completo)
-
     if not tiempo:
-        bot.reply_to(
-            message,
+        bot.reply_to(message,
             "⚠️ No entendí el tiempo. Ejemplos:\n"
             "`/recordar en 10 minutos Reunión`\n"
             "`/recordar en 2 horas Llamar al médico`\n"
-            "`/recordar en 1 día Pagar factura`\n"
             "`/recordar a las 18:30 Gym`",
-            parse_mode="Markdown"
-        )
+            parse_mode="Markdown")
         return
-
     crear_recordatorio(message.from_user.id, texto_completo, tiempo)
     hora_str = datetime.fromtimestamp(tiempo).strftime("%d/%m/%Y %H:%M")
     bot.reply_to(message, f"✅ Recordatorio creado para el *{hora_str}*", parse_mode="Markdown")
@@ -358,19 +324,17 @@ def cmd_ver_recordatorios(message):
     if not recs:
         bot.reply_to(message, "📭 No tienes recordatorios activos.")
         return
-
     lineas = ["📋 *Tus recordatorios activos:*\n"]
     for rec in recs:
         hora = datetime.fromtimestamp(rec["tiempo"]).strftime("%d/%m %H:%M")
         lineas.append(f"• `#{rec['id']}` — {hora}\n  _{rec['mensaje']}_")
-
     bot.reply_to(message, "\n".join(lineas), parse_mode="Markdown")
 
 @bot.message_handler(commands=["cancelar"])
 def cmd_cancelar(message):
     partes = message.text.split()
     if len(partes) < 2 or not partes[1].isdigit():
-        bot.reply_to(message, "Uso: `/cancelar <id>` (usa /recordatorios para ver los IDs)", parse_mode="Markdown")
+        bot.reply_to(message, "Uso: `/cancelar <id>`", parse_mode="Markdown")
         return
     cancelar_recordatorio(int(partes[1]), message.from_user.id)
     bot.reply_to(message, f"🗑️ Recordatorio #{partes[1]} cancelado.")
@@ -379,7 +343,7 @@ def cmd_cancelar(message):
 def cmd_guardar(message):
     partes = message.text.split(None, 2)
     if len(partes) < 3:
-        bot.reply_to(message, "Uso: `/guardar <clave> <valor>`\nEjemplo: `/guardar cumple_mama 15 de marzo`", parse_mode="Markdown")
+        bot.reply_to(message, "Uso: `/guardar <clave> <valor>`", parse_mode="Markdown")
         return
     _, clave, valor = partes
     guardar_dato(message.from_user.id, clave, valor)
@@ -391,18 +355,17 @@ def cmd_ver(message):
     if len(partes) < 2:
         bot.reply_to(message, "Uso: `/ver <clave>`", parse_mode="Markdown")
         return
-    clave = partes[1].strip()
-    valor = leer_dato(message.from_user.id, clave)
+    valor = leer_dato(message.from_user.id, partes[1].strip())
     if valor:
-        bot.reply_to(message, f"📌 *{clave}*: `{valor}`", parse_mode="Markdown")
+        bot.reply_to(message, f"📌 *{partes[1].strip()}*: `{valor}`", parse_mode="Markdown")
     else:
-        bot.reply_to(message, f"❌ No encontré nada guardado con la clave `{clave}`", parse_mode="Markdown")
+        bot.reply_to(message, f"❌ No encontré `{partes[1].strip()}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=["datos"])
 def cmd_datos(message):
     datos = listar_datos(message.from_user.id)
     if not datos:
-        bot.reply_to(message, "📭 No tienes datos guardados.\nUsa `/guardar <clave> <valor>` para guardar algo.", parse_mode="Markdown")
+        bot.reply_to(message, "📭 No tienes datos guardados.", parse_mode="Markdown")
         return
     lineas = ["📦 *Tus datos guardados:*\n"]
     for clave, valor in datos:
@@ -415,9 +378,8 @@ def cmd_borrar(message):
     if len(partes) < 2:
         bot.reply_to(message, "Uso: `/borrar <clave>`", parse_mode="Markdown")
         return
-    clave = partes[1].strip()
-    borrar_dato(message.from_user.id, clave)
-    bot.reply_to(message, f"🗑️ Dato `{clave}` eliminado.", parse_mode="Markdown")
+    borrar_dato(message.from_user.id, partes[1].strip())
+    bot.reply_to(message, f"🗑️ Dato `{partes[1].strip()}` eliminado.")
 
 @bot.message_handler(commands=["limpiar"])
 def cmd_limpiar(message):
@@ -426,7 +388,7 @@ def cmd_limpiar(message):
         conn.execute("DELETE FROM memoria WHERE user_id=?", (message.from_user.id,))
         conn.commit()
         conn.close()
-    bot.reply_to(message, "🧹 Historial de conversación borrado.")
+    bot.reply_to(message, "🧹 Historial borrado.")
 
 @bot.message_handler(func=lambda m: True)
 def responder(message):
@@ -439,23 +401,34 @@ def responder(message):
         bot.reply_to(message, "Algo falló 😢 Intenta de nuevo.")
 
 # ==============================
+# 🌐 WEBHOOK (Flask)
+# ==============================
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    """Railway llama a este endpoint cada vez que llega un mensaje."""
+    json_data = request.get_json()
+    update    = telebot.types.Update.de_json(json_data)
+    bot.process_new_updates([update])
+    return "OK", 200
+
+@app.route("/", methods=["GET"])
+def health():
+    """Health check para Railway."""
+    return "Bot activo ✅", 200
+
+# ==============================
 # 🚀 INICIO
 # ==============================
 if __name__ == "__main__":
-    print("🤖 Bot iniciando...")
+    print("🤖 Bot iniciando con webhook...")
 
-    # ✅ FIX 409: eliminar webhook y limpiar conexiones anteriores
-    try:
-        requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true",
-            timeout=10
-        )
-        print("✅ Webhook eliminado")
-    except Exception as e:
-        print(f"⚠️ No se pudo eliminar webhook: {e}")
-
+    # Registrar el webhook en Telegram
+    webhook_url = f"https://{WEBHOOK_URL}/{BOT_TOKEN}"
     bot.remove_webhook()
-    time.sleep(2)  # darle tiempo a Telegram para liberar la conexión anterior
+    time.sleep(1)
+    bot.set_webhook(url=webhook_url)
+    print(f"✅ Webhook registrado: {webhook_url}")
 
-    print("🟢 Iniciando polling...")
-    bot.infinity_polling(timeout=30, long_polling_timeout=30)
+    # Arrancar Flask (Railway asigna el puerto en la variable PORT)
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
