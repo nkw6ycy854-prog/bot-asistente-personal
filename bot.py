@@ -12,8 +12,8 @@ import re
 # ==============================
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_KEY   = os.getenv("OPENROUTER_API_KEY")
-CHAT_ID   = os.getenv("CHAT_ID")          # Tu chat ID personal (string está bien)
-MODEL     = "meta-llama/llama-3.3-70b-instruct:free"  # ✅ modelo free válido en OpenRouter
+CHAT_ID   = os.getenv("CHAT_ID")
+MODEL     = "meta-llama/llama-3.3-70b-instruct:free"
 
 bot     = telebot.TeleBot(BOT_TOKEN)
 db_lock = threading.Lock()
@@ -21,7 +21,6 @@ db_lock = threading.Lock()
 # ==============================
 # 🗄️ BASE DE DATOS
 # ==============================
-# ✅ FIX: cada hilo usa su propia conexión (evita corrupción con check_same_thread)
 def get_conn():
     conn = sqlite3.connect("memoria.db", check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -69,7 +68,6 @@ def guardar_mensaje(user_id, role, content):
                 "INSERT INTO memoria (user_id, role, content) VALUES (?, ?, ?)",
                 (user_id, role, content)
             )
-            # Mantener solo los últimos 40 mensajes por usuario
             conn.execute("""
                 DELETE FROM memoria WHERE user_id = ? AND id NOT IN (
                     SELECT id FROM memoria WHERE user_id = ? ORDER BY id DESC LIMIT 40
@@ -164,7 +162,6 @@ def cancelar_recordatorio(rec_id, user_id):
         conn.commit()
         conn.close()
 
-# Hilo en segundo plano que revisa recordatorios cada 30 segundos
 def hilo_recordatorios():
     while True:
         try:
@@ -197,7 +194,6 @@ def hilo_recordatorios():
 
 threading.Thread(target=hilo_recordatorios, daemon=True).start()
 
-# Parsea expresiones como "en 10 minutos", "en 2 horas", "en 1 día"
 def parsear_tiempo(texto):
     texto = texto.lower().strip()
     ahora = datetime.now()
@@ -222,7 +218,6 @@ def parsear_tiempo(texto):
             }[unidad]
             return (ahora + delta).timestamp()
 
-    # Hora específica: "a las HH:MM"
     m = re.search(r"a\s+las\s+(\d{1,2}):(\d{2})", texto)
     if m:
         h, mi = int(m.group(1)), int(m.group(2))
@@ -262,8 +257,6 @@ Sé conciso, útil y amigable. Responde siempre en el idioma del usuario."""
 def preguntar_ia(user_id, mensaje):
     historial = obtener_historial(user_id)
 
-    # ✅ FIX 1: system va PRIMERO
-    # ✅ FIX 2: el mensaje actual se incluye en la llamada
     messages = (
         [{"role": "system", "content": SYSTEM_PROMPT}]
         + historial
@@ -273,12 +266,12 @@ def preguntar_ia(user_id, mensaje):
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type":  "application/json",
-        "HTTP-Referer":  "https://github.com/tu-usuario/bot-asistente",  # recomendado por OpenRouter
+        "HTTP-Referer":  "https://github.com/tu-usuario/bot-asistente",
     }
 
     data = {
-        "model":    MODEL,
-        "messages": messages,
+        "model":      MODEL,
+        "messages":   messages,
         "max_tokens": 800,
     }
 
@@ -302,7 +295,6 @@ def preguntar_ia(user_id, mensaje):
 
         respuesta = resultado["choices"][0]["message"]["content"]
 
-        # ✅ FIX 3: guardar AMBOS mensajes correctamente
         guardar_mensaje(user_id, "user",      mensaje)
         guardar_mensaje(user_id, "assistant", respuesta)
 
@@ -336,16 +328,14 @@ def cmd_start(message):
 
 @bot.message_handler(commands=["recordar"])
 def cmd_recordar(message):
-    # Formato: /recordar en X minutos/horas/días <mensaje>
     partes = message.text.split(None, 1)
     if len(partes) < 2:
         bot.reply_to(message, "📌 Uso: `/recordar en 30 minutos Tomar agua`", parse_mode="Markdown")
         return
 
     texto_completo = partes[1]
-
-    # Intentar extraer el tiempo del inicio del texto
     tiempo = parsear_tiempo(texto_completo)
+
     if not tiempo:
         bot.reply_to(
             message,
@@ -358,7 +348,6 @@ def cmd_recordar(message):
         )
         return
 
-    # El mensaje es el texto original (el tiempo se interpreta pero el mensaje es el completo)
     crear_recordatorio(message.from_user.id, texto_completo, tiempo)
     hora_str = datetime.fromtimestamp(tiempo).strftime("%d/%m/%Y %H:%M")
     bot.reply_to(message, f"✅ Recordatorio creado para el *{hora_str}*", parse_mode="Markdown")
@@ -439,13 +428,10 @@ def cmd_limpiar(message):
         conn.close()
     bot.reply_to(message, "🧹 Historial de conversación borrado.")
 
-# ==============================
-# 💬 MENSAJES DE TEXTO LIBRES
-# ==============================
 @bot.message_handler(func=lambda m: True)
 def responder(message):
     try:
-        bot.send_chat_action(message.chat.id, "typing")  # muestra "escribiendo..."
+        bot.send_chat_action(message.chat.id, "typing")
         respuesta = preguntar_ia(message.from_user.id, message.text)
         bot.reply_to(message, respuesta)
     except Exception as e:
@@ -457,6 +443,19 @@ def responder(message):
 # ==============================
 if __name__ == "__main__":
     print("🤖 Bot iniciando...")
+
+    # ✅ FIX 409: eliminar webhook y limpiar conexiones anteriores
+    try:
+        requests.get(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true",
+            timeout=10
+        )
+        print("✅ Webhook eliminado")
+    except Exception as e:
+        print(f"⚠️ No se pudo eliminar webhook: {e}")
+
     bot.remove_webhook()
-    time.sleep(1)
+    time.sleep(2)  # darle tiempo a Telegram para liberar la conexión anterior
+
+    print("🟢 Iniciando polling...")
     bot.infinity_polling(timeout=30, long_polling_timeout=30)
