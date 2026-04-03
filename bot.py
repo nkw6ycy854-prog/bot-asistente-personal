@@ -458,4 +458,5 @@ def responder(message):
 if __name__ == "__main__":
     print("🤖 Bot iniciando...")
     bot.remove_webhook()
+    time.sleep(1)
     bot.infinity_polling(timeout=30, long_polling_timeout=30)
